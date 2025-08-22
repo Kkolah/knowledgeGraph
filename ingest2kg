@@ -1,0 +1,36 @@
+# ingest_to_kg.py - Ingest DB to Neo4j KG
+from neo4j import GraphDatabase
+import sqlite3
+
+# Neo4j Connection
+driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "password"))
+
+def create_kg(tx, flight):
+    tx.run("""
+        MERGE (f:Flight {id: $id, number: $number, price: $price})
+        MERGE (dep:City {name: $dep_city})
+        MERGE (arr:City {name: $arr_city})
+        MERGE (f)-[:DEPARTS_FROM]->(dep)
+        MERGE (f)-[:ARRIVES_AT]->(arr)
+    """, id=flight[0], number=flight[1], dep_city=flight[2], arr_city=flight[3], price=flight[5])
+
+# Ingest Data
+conn = sqlite3.connect('flights.db')
+cursor = conn.cursor()
+cursor.execute("SELECT * FROM flights")
+flights = cursor.fetchall()
+
+with driver.session() as session:
+    for flight in flights:
+        session.execute_write(create_kg, flight)
+
+# Add OData/DB View Metadata (as nodes for schema awareness)
+with driver.session() as session:
+    session.run("""
+        CREATE (s:Schema {name: 'FlightsOData', endpoint: '/flights', filters: '$filter, $top'})
+        CREATE (v:View {name: 'AvailableFlights', query: 'SELECT * FROM flights WHERE departure_time > now'})
+        MERGE (s)-[:HAS_VIEW]->(v)
+    """)
+
+driver.close()
+print("KG populated!")
