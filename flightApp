@@ -1,0 +1,196 @@
+# app.py - Flight Booking App with FastAPI and SQLite
+import sqlite3
+from fastapi import FastAPI, Query, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
+from datetime import datetime
+
+# DB Setup
+engine = create_engine('sqlite:///flights.db')
+Base = declarative_base()
+Session = sessionmaker(bind=engine)
+
+class Flight(Base):
+    __tablename__ = 'flights'
+    id = Column(Integer, primary_key=True)
+    flight_number = Column(String)
+    departure_city = Column(String)
+    arrival_city = Column(String)
+    departure_time = Column(DateTime)
+    arrival_time = Column(DateTime)
+    price = Column(Float)
+    bookings = relationship("BookingModel", back_populates="flight")
+
+class BookingModel(Base):
+    __tablename__ = 'bookings'
+    id = Column(Integer, primary_key=True)
+    flight_id = Column(Integer, ForeignKey('flights.id'))
+    passenger_name = Column(String)
+    booking_time = Column(DateTime, default=datetime.utcnow)
+    flight = relationship("Flight", back_populates="bookings")
+
+Base.metadata.create_all(engine)
+
+# Sample Data Insertion (Run once)
+def insert_sample_data():
+    session = Session()
+    if session.query(Flight).count() == 0:  # Avoid duplicates
+        samples = [
+            Flight(
+                flight_number='AA101', 
+                departure_city='NYC', 
+                arrival_city='LA', 
+                departure_time=datetime(2025, 8, 20, 9, 0), 
+                arrival_time=datetime(2025, 8, 20, 12, 0), 
+                price=200.0
+            ),
+            Flight(
+                flight_number='UA202', 
+                departure_city='CHI', 
+                arrival_city='NYC', 
+                departure_time=datetime(2025, 8, 21, 14, 0), 
+                arrival_time=datetime(2025, 8, 21, 16, 0), 
+                price=150.0
+            ),
+        ]
+        session.add_all(samples)
+        session.commit()
+
+insert_sample_data()
+
+# FastAPI App
+app = FastAPI(title="Flight Booking App")
+
+class Booking(BaseModel):
+    flight_id: int
+    passenger_name: str
+
+# Root endpoint
+@app.get("/")
+def read_root():
+    return {
+        "message": "Welcome to Flight Booking API",
+        "endpoints": [
+            "/flights",
+            "/bookings",
+            "/available_flights_view"
+        ]
+    }
+
+# OData-like Endpoint for Flights (supports $filter, $top, etc. minimally)
+@app.get("/flights")
+def get_flights(
+    filter: str = Query(None, alias="$filter"), 
+    top: int = Query(None, alias="$top")
+):
+    session = Session()
+    query = session.query(Flight)
+    
+    if filter:
+        # Simple parser for 'field eq value' (extend for full OData)
+        parts = filter.split(' eq ')
+        if len(parts) == 2:
+            field, value = parts
+            value = value.strip("'")
+            query = query.filter(getattr(Flight, field) == value)
+    
+    if top:
+        query = query.limit(top)
+    
+    flights = query.all()
+    return [
+        {
+            "id": f.id,
+            "flight_number": f.flight_number,
+            "departure_city": f.departure_city,
+            "arrival_city": f.arrival_city,
+            "departure_time": f.departure_time,
+            "arrival_time": f.arrival_time,
+            "price": f.price
+        }
+        for f in flights
+    ]
+
+# Booking Endpoints
+@app.post("/bookings")
+def create_booking(booking: Booking):
+    session = Session()
+    flight = session.query(Flight).get(booking.flight_id)
+    if not flight:
+        raise HTTPException(status_code=404, detail="Flight not found")
+    
+    db_booking = BookingModel(
+        flight_id=booking.flight_id,
+        passenger_name=booking.passenger_name
+    )
+    session.add(db_booking)
+    session.commit()
+    
+    return {
+        "status": "Booked",
+        "booking_id": db_booking.id,
+        "flight": {
+            "id": flight.id,
+            "flight_number": flight.flight_number,
+            "departure_city": flight.departure_city,
+            "arrival_city": flight.arrival_city,
+            "departure_time": flight.departure_time,
+            "arrival_time": flight.arrival_time,
+            "price": flight.price
+        }
+    }
+
+@app.get("/bookings")
+def get_bookings(
+    passenger_name: str = None,
+    flight_id: int = None
+):
+    session = Session()
+    query = session.query(BookingModel)
+    
+    if passenger_name:
+        query = query.filter(BookingModel.passenger_name == passenger_name)
+    if flight_id:
+        query = query.filter(BookingModel.flight_id == flight_id)
+    
+    bookings = query.all()
+    return [
+        {
+            "id": b.id,
+            "passenger_name": b.passenger_name,
+            "booking_time": b.booking_time,
+            "flight": {
+                "id": b.flight.id,
+                "flight_number": b.flight.flight_number,
+                "departure_city": b.flight.departure_city,
+                "arrival_city": b.flight.arrival_city,
+                "departure_time": b.flight.departure_time,
+                "arrival_time": b.flight.arrival_time,
+                "price": b.flight.price
+            }
+        }
+        for b in bookings
+    ]
+
+# Available Flights View
+@app.get("/available_flights_view")
+def available_flights_view():
+    session = Session()
+    current_time = datetime.utcnow()
+    flights = session.query(Flight).filter(Flight.departure_time > current_time).all()
+    
+    return [
+        {
+            "id": f.id,
+            "flight_number": f.flight_number,
+            "departure_city": f.departure_city,
+            "arrival_city": f.arrival_city,
+            "departure_time": f.departure_time,
+            "price": f.price
+        }
+        for f in flights
+    ]
+
+# Run: uvicorn app:app --reload
