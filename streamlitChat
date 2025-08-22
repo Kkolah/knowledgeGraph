@@ -1,0 +1,125 @@
+# chatbot.py - Streamlit Chatbot with KG Query
+import streamlit as st
+from langchain_community.graphs import Neo4jGraph
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.chains import GraphCypherQAChain
+import requests
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Setup with error handling
+try:
+    graph = Neo4jGraph(
+        url="bolt://localhost:7687",
+        username="neo4j",
+        password=os.getenv("NEO4J_PASSWORD", "password")
+    )
+    
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash",
+        temperature=0,
+        google_api_key=os.getenv("GOOGLE_API_KEY")
+    )
+    
+    # Added allow_dangerous_requests flag and custom Cypher validation
+    chain = GraphCypherQAChain.from_llm(
+        llm=llm,
+        graph=graph,
+        verbose=True,
+        allow_dangerous_requests=True,  # Acknowledge security implications
+        validate_cypher=lambda x: (  # Custom validation to restrict operations
+            "DELETE" not in x.upper() and
+            "CREATE" not in x.upper() and
+            "SET" not in x.upper() and
+            "REMOVE" not in x.upper() and
+            "MERGE" not in x.upper()
+        )
+    )
+except Exception as e:
+    st.error(f"Setup Error: {str(e)}")
+    st.stop()
+
+st.title("Flight Booking Chatbot (KG-Powered)")
+
+# Chat History
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# User Input
+if prompt := st.chat_input("Ask about flights or book one"):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    
+    try:
+        # Check for booking-related queries
+        if "show" in prompt.lower() and "booking" in prompt.lower():
+            # Direct API call to get bookings
+            try:
+                booking_resp = requests.get(
+                    "http://localhost:8000/bookings",
+                    timeout=5
+                )
+                booking_resp.raise_for_status()
+                bookings = booking_resp.json()
+                answer = "Current Bookings:\n\n"
+                for booking in bookings:
+                    answer += f"- Passenger: {booking['passenger_name']}\n"
+                    answer += f"  Flight: {booking['flight']['flight_number']}\n"
+                    answer += f"  From: {booking['flight']['departure_city']} To: {booking['flight']['arrival_city']}\n"
+                    answer += f"  Departure: {booking['flight']['departure_time']}\n\n"
+            except requests.exceptions.RequestException as e:
+                answer = f"Failed to fetch bookings: {str(e)}"
+        else:
+            # Regular KG query or booking creation
+            response = chain.invoke({"query": prompt})
+            answer = response['result']
+            
+            # Handle new booking creation
+            if "book" in prompt.lower():
+                # Use Gemini to extract booking details
+                extraction_prompt = f"""
+                Extract flight ID and passenger name from: {prompt}
+                Format the response exactly like this:
+                {{"flight_id": number, "passenger_name": "string"}}
+                If not found, use null for those fields.
+                """
+                
+                booking_response = llm.invoke(extraction_prompt)
+                # Convert LLM response to dictionary using eval (be careful with this in production)
+                try:
+                    booking_info = eval(booking_response.text)
+                    if booking_info.get("flight_id"):
+                        try:
+                            booking_resp = requests.post(
+                                "http://localhost:8000/bookings",
+                                json=booking_info,
+                                timeout=5
+                            )
+                            booking_resp.raise_for_status()
+                            answer += f"\nBooking status: {booking_resp.json()}"
+                        except requests.exceptions.RequestException as e:
+                            answer += f"\nBooking failed: {str(e)}"
+                    else:
+                        answer += "\nCould not determine flight details for booking."
+                except:
+                    answer += "\nCould not parse booking details."
+        
+        st.session_state.messages.append({"role": "assistant", "content": answer})
+        with st.chat_message("assistant"):
+            st.markdown(answer)
+            
+    except Exception as e:
+        error_message = f"An error occurred: {str(e)}"
+        st.session_state.messages.append({"role": "assistant", "content": error_message})
+        with st.chat_message("assistant"):
+            st.markdown(error_message)
+
+# To run: streamlit run kgaas/chatbot.py
