@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How Symbolic Regression Finds (x+y)/z</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root{
+    --parchment:#F2ECDC;
+    --parchment-deep:#E8E0C9;
+    --ink:#20291F;
+    --ink-soft:#4B5245;
+    --moss:#4C6B4F;
+    --moss-deep:#33472F;
+    --rust:#B5702C;
+    --teal:#2F6B66;
+    --line:#C9BF9E;
+    --card:#FBF8EE;
+  }
+
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--parchment);
+    color:var(--ink);
+    font-family:'IBM Plex Sans',sans-serif;
+    line-height:1.5;
+    background-image:
+      radial-gradient(circle at 1px 1px, rgba(76,107,79,0.08) 1px, transparent 0);
+    background-size:22px 22px;
+  }
+
+  .wrap{max-width:920px;margin:0 auto;padding:56px 24px 100px;}
+
+  header{margin-bottom:48px;}
+  .eyebrow{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:12px;
+    letter-spacing:0.14em;
+    text-transform:uppercase;
+    color:var(--moss-deep);
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-bottom:14px;
+  }
+  .eyebrow::before{
+    content:"";
+    width:22px;height:1px;background:var(--rust);
+  }
+  h1{
+    font-family:'Spectral',serif;
+    font-weight:600;
+    font-size:clamp(30px,4.4vw,44px);
+    line-height:1.12;
+    margin:0 0 14px;
+    color:var(--ink);
+  }
+  h1 em{
+    font-style:italic;
+    color:var(--rust);
+  }
+  .sub{
+    font-size:16px;
+    color:var(--ink-soft);
+    max-width:60ch;
+  }
+  .sub code{font-family:'IBM Plex Mono',monospace;background:var(--parchment-deep);padding:1px 6px;border-radius:3px;font-size:14px;}
+
+  /* ---- pipeline rail ---- */
+  .rail{
+    position:relative;
+    padding-left:34px;
+    margin-top:60px;
+  }
+  .rail::before{
+    content:"";
+    position:absolute;
+    left:9px; top:6px; bottom:6px;
+    width:2px;
+    background:repeating-linear-gradient(to bottom, var(--line) 0 6px, transparent 6px 11px);
+  }
+
+  .step{
+    position:relative;
+    margin-bottom:46px;
+  }
+  .step::before{
+    content:attr(data-n);
+    position:absolute;
+    left:-34px; top:2px;
+    width:20px;height:20px;
+    background:var(--card);
+    border:2px solid var(--moss);
+    border-radius:50%;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10px;
+    font-weight:600;
+    color:var(--moss-deep);
+    display:flex;align-items:center;justify-content:center;
+  }
+  .step-label{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:11px;
+    letter-spacing:0.1em;
+    text-transform:uppercase;
+    color:var(--rust);
+    margin-bottom:6px;
+  }
+  .step h2{
+    font-family:'Spectral',serif;
+    font-size:22px;
+    font-weight:600;
+    margin:0 0 8px;
+  }
+  .step p{
+    color:var(--ink-soft);
+    font-size:14.5px;
+    max-width:64ch;
+    margin:0 0 16px;
+  }
+
+  .card{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:6px;
+    padding:18px 20px;
+    box-shadow:0 1px 0 rgba(32,41,31,0.04);
+  }
+
+  /* data table */
+  table.data{border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:12.5px;width:100%;}
+  table.data th{
+    text-align:right;padding:5px 10px;color:var(--parchment);
+    background:var(--moss-deep);font-weight:600;
+  }
+  table.data th:first-child{border-radius:4px 0 0 0;}
+  table.data th:last-child{border-radius:0 4px 0 0;background:var(--rust);}
+  table.data td{text-align:right;padding:5px 10px;border-bottom:1px solid var(--parchment-deep);}
+  table.data td:last-child{color:var(--rust);font-weight:600;}
+  table.data tr:last-child td{color:var(--ink-soft);}
+  .fade-row td{opacity:0.5;font-style:italic;}
+
+  .split-arrows{display:flex;justify-content:space-between;align-items:center;margin:14px 0;padding:0 8px;}
+  .split-col{
+    font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-soft);
+    display:flex;flex-direction:column;align-items:center;gap:4px;
+  }
+  .split-col .tag{background:var(--moss);color:var(--parchment);padding:3px 10px;border-radius:3px;font-weight:600;}
+  .split-col .tag.y{background:var(--rust);}
+  .split-col .cols{font-size:11px;}
+  .arrow-down{color:var(--line);font-size:20px;}
+
+  /* population grid */
+  .pop-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fill,minmax(64px,1fr));
+    gap:8px;
+  }
+  .mini-tree{
+    aspect-ratio:1;
+    background:var(--parchment-deep);
+    border-radius:4px;
+    display:flex;align-items:center;justify-content:center;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10px;
+    color:var(--ink-soft);
+    opacity:0.55;
+    border:1px solid transparent;
+  }
+  .mini-tree.win{
+    background:var(--moss);
+    color:var(--parchment);
+    opacity:1;
+    border-color:var(--moss-deep);
+    font-weight:600;
+  }
+
+  /* loop diagram */
+  .loop{
+    display:flex;
+    align-items:stretch;
+    gap:0;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:12.5px;
+  }
+  .loop-node{
+    flex:1;
+    background:var(--parchment-deep);
+    border:1px solid var(--line);
+    padding:12px 14px;
+    text-align:center;
+    color:var(--ink-soft);
+  }
+  .loop-node b{display:block;color:var(--ink);font-family:'IBM Plex Sans',sans-serif;font-size:13px;margin-bottom:2px;}
+  .loop-conn{display:flex;align-items:center;padding:0 6px;color:var(--rust);font-size:16px;}
+  .loop-back{
+    text-align:center;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--rust);
+    margin-top:10px;letter-spacing:0.06em;
+  }
+
+  /* generation explorer - signature element */
+  .explorer{
+    background:var(--ink);
+    color:var(--parchment);
+    border-radius:8px;
+    padding:26px 26px 22px;
+  }
+  .explorer .step-label{color:#E3A66B;}
+  .explorer h2{color:var(--parchment);}
+  .explorer p{color:#C6CDBF;}
+
+  .gen-controls{
+    display:flex;align-items:center;gap:14px;margin:18px 0 6px;
+  }
+  .gen-controls input[type=range]{
+    flex:1;
+    accent-color:var(--rust);
+  }
+  .gen-readout{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:13px;
+    min-width:120px;
+    text-align:right;
+    color:#E3A66B;
+  }
+
+  .explorer-body{
+    display:grid;
+    grid-template-columns:1.1fr 1fr;
+    gap:22px;
+    margin-top:18px;
+  }
+  @media (max-width:680px){ .explorer-body{grid-template-columns:1fr;} }
+
+  .chart-box{
+    background:rgba(242,236,220,0.04);
+    border:1px solid rgba(242,236,220,0.15);
+    border-radius:6px;
+    padding:14px 14px 6px;
+  }
+  .chart-title{font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:0.08em;text-transform:uppercase;color:#9AA491;margin-bottom:6px;}
+
+  .tree-box{
+    background:rgba(242,236,220,0.04);
+    border:1px solid rgba(242,236,220,0.15);
+    border-radius:6px;
+    padding:14px;
+    display:flex;flex-direction:column;
+  }
+  #treeSvg{width:100%;height:150px;}
+  .formula-line{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:13px;
+    text-align:center;
+    margin-top:8px;
+    min-height:20px;
+  }
+  .formula-line .ok{color:#8FBF8A;font-weight:600;}
+  .formula-line .bad{color:#D48A6A;}
+
+  .fit-readout{
+    display:flex; justify-content:space-between;
+    font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#9AA491;
+    margin-top:8px;
+  }
+  .fit-readout b{color:var(--parchment);}
+
+  /* final output */
+  .final{
+    background:var(--card);
+    border:1.5px solid var(--moss);
+    border-radius:6px;
+    padding:22px 24px;
+    text-align:center;
+  }
+  .final .formula-big{
+    font-family:'Spectral',serif;
+    font-style:italic;
+    font-size:30px;
+    color:var(--moss-deep);
+    margin:6px 0 10px;
+  }
+  .final .loss{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:12px;
+    color:var(--ink-soft);
+  }
+  .final .loss b{color:var(--rust);}
+
+  footer{
+    margin-top:60px;
+    padding-top:18px;
+    border-top:1px dashed var(--line);
+    font-family:'IBM Plex Mono',monospace;
+    font-size:11.5px;
+    color:var(--ink-soft);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">gplearn · genetic programming</div>
+    <h1>How the search finds <em>(x + y) / z</em></h1>
+    <div class="sub">A step-by-step trace of <code>symbolic_regression_gplearn.py</code> running on your CSV — from raw rows to a converged formula, using the real fitness values from your run.</div>
+  </header>
+
+  <div class="rail">
+
+    <div class="step" data-n="1">
+      <div class="step-label">Load &amp; split</div>
+      <h2>CSV → X matrix + target vector</h2>
+      <p>Pandas reads all 50 rows. Seven columns become the input matrix <b>X</b>; the <b>r</b> column is pulled out as the target <b>y</b> the search is trying to reconstruct.</p>
+      <div class="card">
+        <table class="data">
+          <tr><th>x</th><th>y</th><th>z</th><th>a</th><th>b</th><th>c</th><th>d</th><th>r</th></tr>
+          <tr><td>14.37</td><td>9.56</td><td>3.21</td><td>27.4</td><td>11.9</td><td>44.2</td><td>8.7</td><td>7.4517</td></tr>
+          <tr><td>2.91</td><td>18.02</td><td>6.44</td><td>3.1</td><td>39.8</td><td>16.5</td><td>22.0</td><td>3.2500</td></tr>
+          <tr class="fade-row"><td>…</td><td>…</td><td>…</td><td>…</td><td>…</td><td>…</td><td>…</td><td>…</td></tr>
+          <tr><td>19.88</td><td>4.13</td><td>1.97</td><td>50.0</td><td>2.2</td><td>9.3</td><td>31.6</td><td>12.1878</td></tr>
+        </table>
+        <div class="split-arrows">
+          <div class="split-col">
+            <span class="arrow-down">↙</span>
+            <span class="tag">X</span>
+            <span class="cols">x, y, z, a, b, c, d</span>
+          </div>
+          <div class="split-col">
+            <span class="arrow-down">↘</span>
+            <span class="tag y">y</span>
+            <span class="cols">r (target)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="step" data-n="2">
+      <div class="step-label">Generation 0</div>
+      <h2>2,000 random formula trees</h2>
+      <p>Each candidate randomly combines your 7 variables with +, −, ×, ÷. Almost all of them are nonsense — this is the unguided starting population before any selection happens.</p>
+      <div class="card">
+        <div class="pop-grid" id="popGrid"></div>
+      </div>
+    </div>
+
+    <div class="step" data-n="3">
+      <div class="step-label">Score every candidate</div>
+      <h2>Evaluate against all 50 rows</h2>
+      <p>Each formula predicts an r for every row; gplearn compares that to the real r and computes mean squared error. Lower error = fitter formula.</p>
+      <div class="card">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:13px;text-align:center;color:var(--ink-soft);">
+          MSE = average( (formula(x,y,z,a,b,c,d) − r)<sup>2</sup> ) across all 50 rows
+        </div>
+      </div>
+    </div>
+
+    <div class="step" data-n="4">
+      <div class="step-label">Select → breed → mutate</div>
+      <h2>The evolutionary loop</h2>
+      <p>The lowest-error formulas survive. Pairs of survivors swap sub-trees (crossover); some offspring get a random tweak (mutation). This repeats for 25 generations.</p>
+      <div class="card">
+        <div class="loop">
+          <div class="loop-node"><b>Select</b>keep low-error trees</div>
+          <div class="loop-conn">→</div>
+          <div class="loop-node"><b>Crossover</b>swap branches between two parents</div>
+          <div class="loop-conn">→</div>
+          <div class="loop-node"><b>Mutate</b>randomly alter a node</div>
+        </div>
+        <div class="loop-back">↻ repeats for generations 1 through 24</div>
+      </div>
+    </div>
+
+    <div class="step" data-n="5">
+      <div class="step-label">Watch it converge — drag the slider</div>
+      <h2>Fitness across your actual 25 generations</h2>
+      <p>This curve plots the real best-individual fitness values gplearn printed for your run. Drag through generations to see the population's best formula collapse from junk to the exact answer.</p>
+
+      <div class="explorer">
+        <div class="gen-controls">
+          <input type="range" id="genSlider" min="0" max="24" value="0" step="1">
+          <div class="gen-readout" id="genReadout">Generation 0</div>
+        </div>
+
+        <div class="explorer-body">
+          <div class="chart-box">
+            <div class="chart-title">Best-individual fitness (log scale)</div>
+            <svg id="chartSvg" viewBox="0 0 380 180" width="100%" height="180"></svg>
+          </div>
+          <div class="tree-box">
+            <div class="chart-title">Representative tree shape</div>
+            <svg id="treeSvg" viewBox="0 0 300 150"></svg>
+            <div class="formula-line" id="formulaLine"></div>
+            <div class="fit-readout">
+              <span>fitness (mse)</span>
+              <b id="fitVal">—</b>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="step" data-n="6">
+      <div class="step-label">Result</div>
+      <h2>est._program</h2>
+      <p>By generation 3 the population's best individual already matches the target formula. It never gets displaced for the remaining 21 generations, so this is what gets printed at the end.</p>
+      <div class="final">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-soft);">div(add(X0, X1), X2)</div>
+        <div class="formula-big">r = (x + y) / z</div>
+        <div class="loss">loss ≈ <b>6.8 × 10⁻¹⁰</b> &nbsp;·&nbsp; a, b, c, d unused</div>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>fitness values shown are the real best-individual scores logged during your run · a–d decoys correctly excluded</footer>
+</div>
+
+<script>
+// --- real fitness log from the run (best individual, per generation) ---
+const fitness = [10.6184,10.6184,1.00001,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10,6.8126e-10];
+
+// illustrative junk formulas for early generations (not literally logged, for visualization only)
+const junkFormulas = [
+  "(a - c) / b", "(d + b) * a", "c / (x - d)", "(a + a) - b"
+];
+
+// --- population grid (step 2) ---
+const popGrid = document.getElementById('popGrid');
+const junkSnippets = ["a÷c","c×d−z","(b−a)","d÷(x−c)","a+b×z","(c−d)÷a","b×x−c","d÷a","(a+c)−b","z×c÷d","a−b÷x","(d×z)+a","c÷(b−a)","x×a−d","(b+c)÷z","a÷(d−b)"];
+for(let i=0;i<28;i++){
+  const div = document.createElement('div');
+  div.className = 'mini-tree';
+  div.textContent = junkSnippets[i % junkSnippets.length];
+  popGrid.appendChild(div);
+}
+const winner = document.createElement('div');
+winner.className = 'mini-tree win';
+winner.textContent = '(x+y)÷z';
+popGrid.appendChild(winner);
+
+// --- chart (step 5) ---
+const chartSvg = document.getElementById('chartSvg');
+const W = 380, H = 180, padL = 34, padR = 10, padT = 10, padB = 22;
+const n = fitness.length;
+const logF = fitness.map(f => Math.log10(Math.max(f, 1e-11)));
+const maxLog = Math.max(...logF), minLog = Math.min(...logF);
+function xPos(i){ return padL + (i/(n-1)) * (W-padL-padR); }
+function yPos(v){ return padT + (1 - (v-minLog)/(maxLog-minLog)) * (H-padT-padB); }
+
+let pathD = "";
+fitness.forEach((f,i)=>{
+  const x = xPos(i), y = yPos(logF[i]);
+  pathD += (i===0?"M":"L") + x.toFixed(1) + "," + y.toFixed(1) + " ";
+});
+
+const ns = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs){
+  const el = document.createElementNS(ns, tag);
+  for(const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+
+// axis line
+chartSvg.appendChild(svgEl('line',{x1:padL,y1:H-padB,x2:W-padR,y2:H-padB,stroke:'rgba(242,236,220,0.25)','stroke-width':1}));
+chartSvg.appendChild(svgEl('line',{x1:padL,y1:padT,x2:padL,y2:H-padB,stroke:'rgba(242,236,220,0.25)','stroke-width':1}));
+
+// path
+const path = svgEl('path',{d:pathD.trim(), fill:'none', stroke:'#E3A66B', 'stroke-width':2});
+chartSvg.appendChild(path);
+
+// generation dots
+const dots = [];
+fitness.forEach((f,i)=>{
+  const c = svgEl('circle',{cx:xPos(i), cy:yPos(logF[i]), r:2.4, fill:'#9AA491'});
+  chartSvg.appendChild(c);
+  dots.push(c);
+});
+
+// moving marker
+const marker = svgEl('circle',{cx:xPos(0), cy:yPos(logF[0]), r:5, fill:'#F2ECDC', stroke:'#B5702C', 'stroke-width':2});
+chartSvg.appendChild(marker);
+
+// labels
+const lbl0 = svgEl('text',{x:padL, y:H-6, 'font-size':9, fill:'#9AA491','font-family':'IBM Plex Mono, monospace'});
+lbl0.textContent = 'gen 0';
+chartSvg.appendChild(lbl0);
+const lblN = svgEl('text',{x:W-padR-28, y:H-6, 'font-size':9, fill:'#9AA491','font-family':'IBM Plex Mono, monospace'});
+lblN.textContent = 'gen 24';
+chartSvg.appendChild(lblN);
+
+// --- tree diagram (step 5 right side) ---
+const treeSvg = document.getElementById('treeSvg');
+const formulaLine = document.getElementById('formulaLine');
+const fitVal = document.getElementById('fitVal');
+const genReadout = document.getElementById('genReadout');
+const slider = document.getElementById('genSlider');
+
+function drawTree(converged){
+  treeSvg.innerHTML = "";
+  const nodeStyle = (fill,stroke) => ({fill, stroke, 'stroke-width':1.5});
+  const textStyle = {'font-family':'IBM Plex Mono, monospace','font-size':12,'text-anchor':'middle',fill:'#F2ECDC'};
+
+  function node(cx,cy,label,ok){
+    const g = svgEl('g',{});
+    const circ = svgEl('circle', Object.assign({cx,cy,r:18}, nodeStyle(ok? '#4C6B4F':'#5A5142', ok?'#8FBF8A':'#8A7F5E')));
+    g.appendChild(circ);
+    const t = svgEl('text', Object.assign({x:cx,y:cy+4}, textStyle));
+    t.textContent = label;
+    g.appendChild(t);
+    treeSvg.appendChild(g);
+    return {cx,cy};
+  }
+  function edge(a,b){
+    treeSvg.appendChild(svgEl('line',{x1:a.cx,y1:a.cy+16,x2:b.cx,y2:b.cy-16,stroke:'rgba(242,236,220,0.3)','stroke-width':1.5}));
+  }
+
+  if(converged){
+    const div = node(150,26,'÷',true);
+    const add = node(100,80,'+',true);
+    const zN  = node(200,80,'z',true);
+    const xN  = node(70,134,'x',true);
+    const yN  = node(130,134,'y',true);
+    edge(div,add); edge(div,zN); edge(add,xN); edge(add,yN);
+  } else {
+    const top = node(150,26,'÷',false);
+    const l = node(100,80,'−',false);
+    const r = node(200,80,'a',false);
+    const ll = node(70,134,'c',false);
+    const lr = node(130,134,'d',false);
+    edge(top,l); edge(top,r); edge(l,ll); edge(l,lr);
+  }
+}
+
+function update(genIdx){
+  genReadout.textContent = "Generation " + genIdx;
+  marker.setAttribute('cx', xPos(genIdx));
+  marker.setAttribute('cy', yPos(logF[genIdx]));
+  fitVal.textContent = fitness[genIdx].toExponential(3);
+
+  const converged = genIdx >= 3;
+  drawTree(converged);
+  if(converged){
+    formulaLine.innerHTML = 'best so far: <span class="ok">(x + y) / z</span> — locked in';
+  } else {
+    const f = junkFormulas[genIdx % junkFormulas.length];
+    formulaLine.innerHTML = 'best so far: <span class="bad">' + f + '</span> — still searching';
+  }
+}
+
+slider.addEventListener('input', e => update(parseInt(e.target.value)));
+update(0);
+</script>
+</body>
+</html>
